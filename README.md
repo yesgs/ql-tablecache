@@ -75,6 +75,21 @@ INSERT INTO ad_space_config (id, name, enabled) VALUES (6111, '首页广告位',
 
 配置环境变量 `MYSQL_DSN` 和 `REDIS_URL` 后，在本模块根目录执行 `go run ./examples/adspace -id 6111`。示例等待快照就绪，完成一次本地查询后退出。Redis URL 默认是 `redis://localhost:6379/0`，MySQL DSN 使用 go-sql-driver/mysql 的格式。
 
+### 一个广告位关联两张子表
+
+[多表示例](examples/adspace-relations/main.go) 在同一个只读事务里分别读取广告位、素材和投放规则，按 `ad_space_id` 将子记录归入 `map[int64]AdSpace`。快照就绪后，一次 `cache.Get(id)` 就能拿到主表字段和两组子记录。
+
+准备一个空的 MySQL 演示库和 Redis，然后在本模块根目录执行以下命令。把数据库名、账号和密码换成实际值。
+
+```bash
+mysql -h 127.0.0.1 -u demo -p --default-character-set=utf8mb4 tablecache_demo < examples/adspace-relations/schema.sql
+MYSQL_DSN='demo:password@tcp(127.0.0.1:3306)/tablecache_demo' \
+REDIS_URL='redis://localhost:6379/0' \
+go run ./examples/adspace-relations -id 6111
+```
+
+广告位 `6111` 输出 2 条素材和 3 条投放规则。将参数换成 `-id 6112`，会看到 1 条素材和空的规则数组。
+
 ## 配置与故障行为
 
 | 配置 | 默认值 | 含义 |
