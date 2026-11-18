@@ -33,7 +33,7 @@ type Options struct {
 	LoadTimeout     time.Duration // Budget for the source read and encoding. Default 15 seconds.
 	RedisTimeout    time.Duration // Budget per Redis operation. The client must honor context deadlines. Default 2 seconds.
 	RetryInterval   time.Duration // Shared cooldown after a source failure. Default 5 seconds.
-	MaxBytes        int           // Maximum encoded snapshot size. Default 8 MiB.
+	MaxBytes        int           // Maximum encoded snapshot size. Default 256 MiB.
 	OnError         func(error)   // Called in the worker; should return promptly.
 }
 
@@ -108,7 +108,7 @@ func New[K Key, V any](client redis.Scripter, opts Options, loader Loader[K, V])
 		return nil, errors.New("tablecache: LoadTimeout and RedisTimeout overflow the refresh lease duration")
 	}
 	if opts.MaxBytes == 0 {
-		opts.MaxBytes = 8 << 20
+		opts.MaxBytes = 256 << 20
 	}
 	if opts.MaxBytes < 2 {
 		return nil, errors.New("tablecache: MaxBytes must be at least 2")

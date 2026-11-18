@@ -85,7 +85,7 @@ INSERT INTO ad_space_config (id, name, enabled) VALUES (6111, '首页广告位',
 | LoadTimeout | 15 秒 | Loader 与编码检查的时间预算。数据库查询必须使用传入的 context |
 | RedisTimeout | 2 秒 | 每次 Redis 操作的 context 超时。`New` 会检查标准 go-redis 客户端是否启用 context 超时及套接字 deadline |
 | RetryInterval | 5 秒 | 回源或发布失败后，同一数据集的共享重试间隔 |
-| MaxBytes | 8 MiB | 可发布、接受的 JSON 快照上限。接收方在 Redis 返回正文前检查大小，发布方先编码再检查 |
+| MaxBytes | 256 MiB | 可发布、接受的 JSON 快照上限。接收方在 Redis 返回正文前检查大小，发布方先编码再检查 |
 | OnError | 可选 | 后台错误回调，可接日志或监控。回调在刷新协程执行，应尽快返回 |
 
 - **新进程启动。** Redis 已有快照时可直接就绪。Redis 为空时，一台实例回源，其他实例等待。将 `WaitReady` 接入服务启动或就绪探针，避免把“尚未加载”当成“主键不存在”。
@@ -99,7 +99,7 @@ INSERT INTO ad_space_config (id, name, enabled) VALUES (6111, '首页广告位',
 - 所有实例连接同一 Redis 主节点或同一 Redis 集群，使用相同的 Namespace、字段结构和刷新参数。Redis Cluster 下两个键共享同一哈希槽。快照键没有 TTL，协调键使用 TTL。Redis ACL 需要允许脚本执行及脚本所用的 `HGET`、`HSTRLEN`、`EXISTS`、`GET`、`HSET` 和 `PSETEX` 命令，并为快照预留空间。
 - Loader 只返回完整数据集。空表返回初始化后的空 map。nil map 表示异常。单表使用一条 SELECT 即可。若一个数据集要跨多张 InnoDB 表保持一致，可由 Loader 在一个只读、一致性快照事务内完成读取。
 - 键使用整数或有效 UTF-8 字符串，每个键用 JSON 编解码后须保持原值。值使用可稳定 JSON 往返的具体类型。查询结果含可空字段时自行映射。快照内的数据只读，值中含指针、map 或切片时，业务要修改须先复制。优先使用标量字段。发布进程和其他进程使用同一份序列化表示。
-- 这套实现适合能够完整驻留内存、允许分钟级延迟的配置表。刷新瞬间旧 map、新 map 和编解码缓冲区可以同时存在。用真实数据量评估单机内存、一次 SELECT 的耗时和变更时的 Redis 出口带宽。默认 8 MiB 是库的大小设置，可通过 MaxBytes 调整。对于每分钟全量传输已经昂贵的大表，可改用按业务域拆分的数据集，或采用 binlog/CDC 增量分发。
+- 这套实现适合能够完整驻留内存、允许分钟级延迟的配置表。刷新瞬间旧 map、新 map 和编解码缓冲区可以同时存在。用真实数据量评估单机内存、一次 SELECT 的耗时和变更时的 Redis 出口带宽。默认 256 MiB 是库的大小设置，可通过 MaxBytes 调整。对于每分钟全量传输已经昂贵的大表，可改用按业务域拆分的数据集，或采用 binlog/CDC 增量分发。
 
 ## 验证
 
