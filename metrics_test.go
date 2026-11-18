@@ -12,7 +12,7 @@ func TestMetricsGetMetrics(t *testing.T) {
 	m.LastRefreshTime.Store(time.Unix(1000000, 0).Unix())
 	m.LastRefreshDuration.Store(500)
 	version := "abc123"
-	m.SnapshotVersion.Store(&version)
+	m.snapshotVersion.Store(version)
 	m.SnapshotBytes.Store(1024)
 	m.SnapshotRows.Store(50)
 	m.PollAttempts.Store(100)

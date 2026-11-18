@@ -153,13 +153,19 @@ func (c *Cache[K, V]) refresh(ctx context.Context, token, known string, loadDead
 		return fmt.Errorf("publish: %w", err)
 	}
 	if result != 1 {
-		return errors.New("lease lost before publication")
+		return fmt.Errorf(
+			"lease lost before publication; "+
+				"this usually means LoadTimeout is too short for your query. "+
+				"Current: %v. Try increasing it or optimize the database query. "+
+				"See TROUBLESHOOTING.md section 7 'Lease expiration'",
+			c.opts.LoadTimeout,
+		)
 	}
 	if next != current {
 		c.install(next)
 	}
 	// Update metrics after successful installation
-	c.metrics.SnapshotVersion.Store(&version)
+	c.metrics.snapshotVersion.Store(version)
 	c.metrics.SnapshotBytes.Store(int64(len(body)))
 	c.metrics.SnapshotRows.Store(int64(len(next.rows)))
 	return nil

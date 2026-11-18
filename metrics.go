@@ -25,7 +25,8 @@ type Metrics struct {
 
 	// SnapshotVersion is the SHA-256 hex digest of the current snapshot.
 	// Empty string before the first snapshot is installed.
-	SnapshotVersion atomic.Pointer[string]
+	// Stored as atomic.Value containing string to avoid use-after-free.
+	snapshotVersion atomic.Value
 
 	// SnapshotBytes is the serialized size of the current snapshot in bytes.
 	SnapshotBytes atomic.Int64
@@ -44,8 +45,8 @@ type Metrics struct {
 // a point-in-time copy and safe to read without synchronization.
 func (m *Metrics) GetMetrics() MetricsSnapshot {
 	version := ""
-	if v := m.SnapshotVersion.Load(); v != nil {
-		version = *v
+	if v := m.snapshotVersion.Load(); v != nil {
+		version = v.(string)
 	}
 	return MetricsSnapshot{
 		RefreshSuccess:      m.RefreshSuccess.Load(),

@@ -130,6 +130,56 @@ func (c *Cache[K, V]) Get(key K) (V, bool) { return c.current.Load().Get(key) }
 
 func (c *Cache[K, V]) Snapshot() *Snapshot[K, V] { return c.current.Load() }
 
+// IsReady returns true if a snapshot has been successfully loaded.
+// Use this to check cache readiness without allocating a Snapshot.
+func (c *Cache[K, V]) IsReady() bool {
+	return c.current.Load() != nil
+}
+
+// ClearLocalSnapshot clears the in-memory snapshot without affecting Redis.
+// The next poll will fetch from Redis if available. Useful for debugging and testing.
+// Returns true if a snapshot was cleared, false if already empty.
+func (c *Cache[K, V]) ClearLocalSnapshot() bool {
+	old := c.current.Swap(nil)
+	return old != nil
+}
+
+// SnapshotInfo returns metadata about the current snapshot without allocating the Snapshot itself.
+// Useful for monitoring dashboards and health checks.
+type SnapshotInfo struct {
+	// Version is the SHA-256 hex digest of the snapshot, or "" if not ready.
+	Version string
+
+	// Bytes is the serialized size of the snapshot in bytes.
+	Bytes int64
+
+	// Rows is the number of rows in the snapshot.
+	Rows int64
+
+	// Ready indicates if a snapshot has been successfully loaded.
+	Ready bool
+
+	// StalenessSeconds is the time elapsed since the last successful refresh.
+	// Zero if never refreshed or if LastRefreshTime is not set.
+	StalenessSeconds int64
+}
+
+// SnapshotInfo returns metadata about the current snapshot without loading it into memory.
+func (c *Cache[K, V]) SnapshotInfo() SnapshotInfo {
+	m := c.Metrics().GetMetrics()
+	staleness := int64(0)
+	if !m.LastRefreshTime.IsZero() {
+		staleness = int64(time.Since(m.LastRefreshTime).Seconds())
+	}
+	return SnapshotInfo{
+		Version:           m.SnapshotVersion,
+		Bytes:             m.SnapshotBytes,
+		Rows:              m.SnapshotRows,
+		Ready:             c.IsReady(),
+		StalenessSeconds:  staleness,
+	}
+}
+
 // Metrics returns a pointer to the cache's runtime metrics. Safe for concurrent access.
 func (c *Cache[K, V]) Metrics() *Metrics { return &c.metrics }
 

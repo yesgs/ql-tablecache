@@ -248,7 +248,93 @@ func TestMetricsPollErrors(t *testing.T) {
 	}
 }
 
+func TestIsReady(t *testing.T) {
+	c := new(Cache[int, string])
+	if c.IsReady() {
+		t.Fatal("should not be ready initially")
+	}
+	c.current.Store(&Snapshot[int, string]{rows: map[int]string{}})
+	if !c.IsReady() {
+		t.Fatal("should be ready after snapshot installed")
+	}
+}
+
+func TestClearLocalSnapshot(t *testing.T) {
+	c := new(Cache[int, string])
+
+	// Clear when empty
+	if c.ClearLocalSnapshot() {
+		t.Fatal("should not clear when empty")
+	}
+	if c.IsReady() {
+		t.Fatal("should not be ready")
+	}
+
+	// Install snapshot
+	c.current.Store(&Snapshot[int, string]{rows: map[int]string{1: "a"}})
+	if !c.IsReady() {
+		t.Fatal("should be ready")
+	}
+
+	// Clear when not empty
+	if !c.ClearLocalSnapshot() {
+		t.Fatal("should clear when not empty")
+	}
+	if c.IsReady() {
+		t.Fatal("should not be ready after clear")
+	}
+
+	// Second clear should return false
+	if c.ClearLocalSnapshot() {
+		t.Fatal("second clear should return false")
+	}
+}
+
+func TestSnapshotInfo(t *testing.T) {
+	r := testRedis(t)
+
+	c := makeCache(t, r, func(context.Context) (map[int]string, error) {
+		return map[int]string{1: "a", 2: "b"}, nil
+	})
+
+	// Before ready
+	info := c.SnapshotInfo()
+	if info.Ready {
+		t.Fatal("should not be ready initially")
+	}
+	if info.Version != "" {
+		t.Fatal("should have empty version before ready")
+	}
+	if info.Rows != 0 {
+		t.Fatal("should have 0 rows before ready")
+	}
+
+	// After refresh
+	mustStep(t, c)
+	info = c.SnapshotInfo()
+	if !info.Ready {
+		t.Fatal("should be ready after refresh")
+	}
+	if info.Version == "" {
+		t.Fatal("should have non-empty version after refresh")
+	}
+	if info.Rows != 2 {
+		t.Fatalf("expected 2 rows, got %d", info.Rows)
+	}
+	if info.Bytes == 0 {
+		t.Fatal("expected non-zero bytes")
+	}
+	if info.StalenessSeconds < 0 {
+		t.Fatal("staleness should be non-negative")
+	}
+	if info.StalenessSeconds > 1 {
+		t.Logf("warning: staleness %d seconds is higher than expected", info.StalenessSeconds)
+	}
+}
+
 func TestJitterInRun(t *testing.T) {
+
+
 	r := testRedis(t)
 	c, err := New(r, Options{
 		Namespace:    "test:jitter:v1",

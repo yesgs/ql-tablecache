@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -93,15 +94,25 @@ func validateRedisClient(client redis.Scripter) error {
 	default:
 		return nil
 	}
-	return errors.New("tablecache: Redis client is required")
+	return fmt.Errorf(
+		"tablecache: Redis client is required; " +
+			"pass a *redis.Client, *redis.ClusterClient, or *redis.Ring " +
+			"with ContextTimeoutEnabled=true and socket deadlines enabled",
+	)
 }
 
 func validateRedisDeadlines(contextEnabled, socketEnabled bool) error {
 	if !contextEnabled {
-		return errors.New("tablecache: enable ContextTimeoutEnabled on the Redis client")
+		return fmt.Errorf(
+			"tablecache: enable ContextTimeoutEnabled on the Redis client; " +
+				"e.g., &redis.Options{ContextTimeoutEnabled: true}",
+		)
 	}
 	if !socketEnabled {
-		return errors.New("tablecache: Redis client socket deadlines must be enabled")
+		return fmt.Errorf(
+			"tablecache: Redis client socket deadlines must be enabled; " +
+				"keep ReadTimeout and WriteTimeout >= 0 (default is 3 seconds)",
+		)
 	}
 	return nil
 }
@@ -111,7 +122,15 @@ func (s redisStore) poll(ctx context.Context, local string, maxBytes int) (pollR
 	defer cancel()
 	vals, err := pollScript.Run(ctx, s.client, s.keys, local, maxBytes).Slice()
 	if err != nil {
-		return pollResult{}, err
+		if errors.Is(err, context.DeadlineExceeded) {
+			return pollResult{}, fmt.Errorf(
+				"poll: Redis timeout after %v; "+
+					"Redis may be overloaded or network latency is high; "+
+					"try increasing RedisTimeout (current: %v)",
+				s.timeout, s.timeout,
+			)
+		}
+		return pollResult{}, fmt.Errorf("poll: %w", err)
 	}
 	if len(vals) != 4 {
 		return pollResult{}, errors.New("invalid Redis poll response length")
