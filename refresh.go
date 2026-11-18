@@ -44,9 +44,11 @@ func (c *Cache[K, V]) accept(remote pollResult) error {
 }
 
 func (c *Cache[K, V]) step(ctx context.Context) error {
+	c.metrics.PollAttempts.Add(1)
 	local := c.Snapshot().Version()
 	remote, err := c.store.poll(ctx, local, c.opts.MaxBytes)
 	if err != nil {
+		c.metrics.PollErrors.Add(1)
 		return fmt.Errorf("poll: %w", err)
 	}
 
@@ -63,6 +65,7 @@ func (c *Cache[K, V]) step(ctx context.Context) error {
 		return errors.Join(readErr, err)
 	}
 	token := hex.EncodeToString(nonce[:])
+	// Lease TTL = LoadTimeout + 2*RedisTimeout (one for acquire, one for publish)
 	ttl := (c.opts.LoadTimeout + 2*c.opts.RedisTimeout).Truncate(time.Millisecond)
 	// Start the deadline before Redis grants the lease and after local decoding.
 	leaseDeadline := time.Now().Add(ttl)
@@ -79,11 +82,19 @@ func (c *Cache[K, V]) step(ctx context.Context) error {
 	if readErr != nil {
 		known = "" // Repair invalid Redis data on a successful source read.
 	}
+	refreshStart := time.Now()
 	err = c.refresh(leaseCtx, token, known, leaseDeadline.Add(-c.opts.RedisTimeout))
-	if err != nil && ctx.Err() == nil {
-		// A lost response can leave publication ambiguous. Back off only if
-		// this token still owns the gate on the active Redis primary.
-		err = errors.Join(err, c.store.backoff(ctx, token, c.opts.RetryInterval))
+	if err != nil {
+		c.metrics.RefreshFailure.Add(1)
+		if ctx.Err() == nil {
+			// A lost response can leave publication ambiguous. Back off only if
+			// this token still owns the gate on the active Redis primary.
+			err = errors.Join(err, c.store.backoff(ctx, token, c.opts.RetryInterval))
+		}
+	} else {
+		c.metrics.RefreshSuccess.Add(1)
+		c.metrics.LastRefreshTime.Store(time.Now().Unix())
+		c.metrics.LastRefreshDuration.Store(time.Since(refreshStart).Milliseconds())
 	}
 	return errors.Join(readErr, err)
 }
@@ -113,6 +124,9 @@ func (c *Cache[K, V]) refresh(ctx context.Context, token, known string, loadDead
 	}
 	if len(body) > c.opts.MaxBytes {
 		return fmt.Errorf("encoded snapshot has %d bytes; MaxBytes is %d", len(body), c.opts.MaxBytes)
+	}
+	if c.opts.WarnBytes > 0 && len(body) > c.opts.WarnBytes && c.opts.OnWarn != nil {
+		c.opts.OnWarn(fmt.Errorf("snapshot size %d bytes exceeds WarnBytes %d", len(body), c.opts.WarnBytes))
 	}
 	version := digest(body)
 	current := c.Snapshot()
@@ -144,6 +158,10 @@ func (c *Cache[K, V]) refresh(ctx context.Context, token, known string, loadDead
 	if next != current {
 		c.install(next)
 	}
+	// Update metrics after successful installation
+	c.metrics.SnapshotVersion.Store(&version)
+	c.metrics.SnapshotBytes.Store(int64(len(body)))
+	c.metrics.SnapshotRows.Store(int64(len(next.rows)))
 	return nil
 }
 

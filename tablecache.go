@@ -34,7 +34,9 @@ type Options struct {
 	RedisTimeout    time.Duration // Budget per Redis operation. The client must honor context deadlines. Default 2 seconds.
 	RetryInterval   time.Duration // Shared cooldown after a source failure. Default 5 seconds.
 	MaxBytes        int           // Maximum encoded snapshot size. Default 256 MiB.
+	WarnBytes       int           // Soft limit for snapshot size. OnWarn is called when exceeded. Default 0 (disabled).
 	OnError         func(error)   // Called in the worker; should return promptly.
+	OnWarn          func(error)   // Called when snapshot size exceeds WarnBytes. Optional.
 }
 
 // Snapshot is immutable. Treat reference fields inside returned values as read-only.
@@ -72,9 +74,11 @@ type Cache[K Key, V any] struct {
 	current atomic.Pointer[Snapshot[K, V]]
 	running atomic.Bool
 	ready   chan struct{}
+	force   chan struct{} // Signals a forced refresh request
 	opts    Options
 	loader  Loader[K, V]
 	store   redisStore
+	metrics Metrics
 }
 
 // New constructs a cache. The Redis client must honor context deadlines.
@@ -113,15 +117,35 @@ func New[K Key, V any](client redis.Scripter, opts Options, loader Loader[K, V])
 	if opts.MaxBytes < 2 {
 		return nil, errors.New("tablecache: MaxBytes must be at least 2")
 	}
+	if opts.WarnBytes > 0 && opts.WarnBytes >= opts.MaxBytes {
+		return nil, errors.New("tablecache: WarnBytes must be less than MaxBytes")
+	}
 	base := "tablecache:{" + opts.Namespace + "}"
 	store := redisStore{client: client, keys: []string{base + ":snapshot", base + ":gate"}, timeout: opts.RedisTimeout}
-	return &Cache[K, V]{ready: make(chan struct{}), opts: opts, loader: loader, store: store}, nil
+	return &Cache[K, V]{ready: make(chan struct{}), force: make(chan struct{}, 1), opts: opts, loader: loader, store: store}, nil
 }
 
 // Get performs a process-local lookup. It returns ok=false until the cache is ready.
 func (c *Cache[K, V]) Get(key K) (V, bool) { return c.current.Load().Get(key) }
 
 func (c *Cache[K, V]) Snapshot() *Snapshot[K, V] { return c.current.Load() }
+
+// Metrics returns a pointer to the cache's runtime metrics. Safe for concurrent access.
+func (c *Cache[K, V]) Metrics() *Metrics { return &c.metrics }
+
+// ForceRefresh triggers an immediate refresh attempt by clearing the Redis gate.
+// The next polling cycle (within PollInterval) will attempt to acquire the lease.
+// This is a hint, not a guarantee: if another instance is already refreshing,
+// this instance will wait for that refresh to complete. Returns an error if
+// Redis is unavailable. Safe to call concurrently.
+func (c *Cache[K, V]) ForceRefresh(ctx context.Context) error {
+	select {
+	case c.force <- struct{}{}:
+	default:
+		// Already pending
+	}
+	return c.store.clearGate(ctx)
+}
 
 // WaitReady waits until a complete snapshot, including a valid empty one, is installed.
 // An existing shared snapshot can satisfy readiness even while the source is down.
@@ -146,14 +170,27 @@ func (c *Cache[K, V]) Run(ctx context.Context) error {
 			c.opts.OnError(fmt.Errorf("tablecache %q: %w", c.opts.Namespace, err))
 		}
 		p := c.opts.PollInterval
-		timer := time.NewTimer(p - p/5 + rand.N(p/5*2+1))
+		timer := time.NewTimer(jitter(p, 20))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+		case <-c.force:
+			timer.Stop()
+			// Immediate retry on force refresh
 		case <-timer.C:
 		}
 	}
 	return nil
+}
+
+// jitter returns base duration with ±percent random variation.
+// For example, jitter(100ms, 20) returns a duration between 80ms and 120ms.
+func jitter(base time.Duration, percent int) time.Duration {
+	if percent <= 0 || percent >= 100 {
+		return base
+	}
+	delta := base * time.Duration(percent) / 100
+	return base - delta + rand.N(2*delta+1)
 }
 
 func (c *Cache[K, V]) install(s *Snapshot[K, V]) {

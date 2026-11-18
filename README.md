@@ -86,13 +86,40 @@ INSERT INTO ad_space_config (id, name, enabled) VALUES (6111, '首页广告位',
 | RedisTimeout | 2 秒 | 每次 Redis 操作的 context 超时。`New` 会检查标准 go-redis 客户端是否启用 context 超时及套接字 deadline |
 | RetryInterval | 5 秒 | 回源或发布失败后，同一数据集的共享重试间隔 |
 | MaxBytes | 256 MiB | 可发布、接受的 JSON 快照上限。接收方在 Redis 返回正文前检查大小，发布方先编码再检查 |
+| WarnBytes | 0（禁用） | 快照大小软限制。超过时调用 OnWarn 回调，用于提前告警 |
 | OnError | 可选 | 后台错误回调，可接日志或监控。回调在刷新协程执行，应尽快返回 |
+| OnWarn | 可选 | 快照大小超过 WarnBytes 时的告警回调。应尽快返回 |
 
 - **新进程启动。** Redis 已有快照时可直接就绪。Redis 为空时，一台实例回源，其他实例等待。将 `WaitReady` 接入服务启动或就绪探针，避免把“尚未加载”当成“主键不存在”。
 - **MySQL 查询失败。** 已有进程保留上一版。只要 Redis 可用，新实例也能取得上一版。错误回调会收到查询、扫描、编码或大小超限等错误。Loader 要返回 `rows.Err()`，以免把半张表发布出去。
 - **Redis 故障。** 已就绪实例继续本地读取。Redis 可读时，即使内存压力导致写入失败，新实例也能使用已有的完整快照。库只在取得 Redis 刷新权后发起查询。长期故障时旧数据可以持续被读取，`WaitReady` 表示曾加载完整快照。配置有时效要求的业务可监控 Loader 最近成功返回的时间。
 - **刷新进程退出或暂停。** 默认租约是 LoadTimeout 加两倍 RedisTimeout，即 19 秒。实例解码共享快照后才争抢租约，加载和发布受剩余租约时间约束。到期后下一个轮询者可以接手。发布前校验随机令牌，防止失去租约的进程覆盖当前 Redis 主节点上的新结果。Redis 主从切换或丢键时可能有额外的只读查询，也可能短暂恢复到旧快照，后续成功刷新会重新收敛。
-- **更新可见时间。** 默认配置下，在一轮查询刚结束后发生的变更，通常要等约 1 分钟，再加上回源、轮询和解码时间。各 ECS 逐步切换到新版本。需要同一请求内版本一致时复用同一个 Snapshot。
+- **更新可见时间。** 默认配置下，在一轮查询刚结束后发生的变更，通常要等约 1 分钟，再加上回源、轮询和解码时间。各 ECS 逐步切换到新版本。需要同一请求内版本一致时复用同一个 Snapshot。紧急配置变更时，可调用 `cache.ForceRefresh(ctx)` 强制立即刷新。
+
+## 可观测性
+
+库内置 `Metrics` 类型记录运行时统计，用于监控和告警。
+
+```go
+// 获取指标快照
+metrics := cache.Metrics().GetMetrics()
+log.Printf("刷新成功: %d, 失败: %d", metrics.RefreshSuccess, metrics.RefreshFailure)
+log.Printf("最近刷新: %v", metrics.LastRefreshTime)
+log.Printf("快照: %d 行, %d 字节", metrics.SnapshotRows, metrics.SnapshotBytes)
+```
+
+**关键指标**:
+- `RefreshSuccess`/`RefreshFailure`: 刷新成功和失败计数
+- `LastRefreshTime`: 最近成功刷新的时间戳，用于检测数据过期
+- `SnapshotBytes`/`SnapshotRows`: 当前快照大小，用于容量规划
+- `PollAttempts`/`PollErrors`: Redis 轮询统计
+
+集成 Prometheus 或其他监控系统时，定期采集这些指标。告警建议：
+- `time.Since(LastRefreshTime) > 5 * RefreshInterval` 表示长时间未刷新
+- `RefreshFailure` 持续增长表示源或 Redis 故障
+- `SnapshotBytes` 接近 `MaxBytes` 的 90% 时告警
+
+详见 [故障排查指南](TROUBLESHOOTING.md)。
 
 ## 表和数据的约定
 

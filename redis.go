@@ -12,6 +12,7 @@ import (
 
 // Both keys share a cluster hash slot. Polling has no writes so a cold cache
 // can read an existing snapshot even when Redis refuses writes.
+// Returns: [version, body, gate_exists, oversized_flag]
 var pollScript = redis.NewScript(`
 local version = redis.call('HGET', KEYS[1], 'version') or ''
 local body = ''
@@ -25,6 +26,8 @@ if version ~= '' and version ~= ARGV[1] then
 end
 return {version, body, redis.call('EXISTS', KEYS[2]), oversized}`)
 
+// Acquires the refresh lease atomically. Returns 1 if acquired, 0 if already held.
+// KEYS[1]: gate key, ARGV[1]: token, ARGV[2]: lease TTL in milliseconds
 var acquireScript = redis.NewScript(`
 local current = redis.call('GET', KEYS[1])
 if current == ARGV[1] then return 1 end
@@ -32,8 +35,10 @@ if current then return 0 end
 redis.call('PSETEX', KEYS[1], ARGV[2], ARGV[1])
 return 1`)
 
+// Publishes a new snapshot atomically after verifying lease ownership.
 // Redis uses its built-in SHA-1 to check the existing body against the source
 // without transferring it. Snapshot versions and follower checks still use SHA-256.
+// Returns: 1 on success, 0 if lease lost, -1 if reuse validation failed
 var publishScript = redis.NewScript(`
 if redis.call('GET', KEYS[2]) ~= ARGV[1] then return 0 end
 if ARGV[3] ~= '' then
@@ -51,6 +56,9 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then
     redis.call('PSETEX', KEYS[1], ARGV[2], 'backoff')
 end
 return 1`)
+
+var clearGateScript = redis.NewScript(`
+return redis.call('DEL', KEYS[1])`)
 
 type redisStore struct {
 	client  redis.Scripter
@@ -142,4 +150,10 @@ func (s redisStore) backoff(ctx context.Context, token string, interval time.Dur
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	return backoffScript.Run(ctx, s.client, s.keys[1:], token, interval.Milliseconds()).Err()
+}
+
+func (s redisStore) clearGate(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+	return clearGateScript.Run(ctx, s.client, s.keys[1:]).Err()
 }
