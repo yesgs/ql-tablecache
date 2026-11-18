@@ -13,11 +13,11 @@
 
 ## 接入业务
 
-需要 Go 1.26+。压缩包里的模块路径是 `example.com/tablecache`。将它解压在业务仓库旁边，可在业务模块根目录使用本地路径接入。
+需要 Go 1.26+。模块路径为 `github.com/yesgs/ql-tablecache`。将 `ql-tablecache` 目录放在业务仓库旁边，可在业务模块根目录使用本地路径接入。
 
 ```bash
-go mod edit -replace=example.com/tablecache=../tablecache
-go get example.com/tablecache@v0.0.0
+go mod edit -replace=github.com/yesgs/ql-tablecache=../ql-tablecache
+go get github.com/yesgs/ql-tablecache@v0.0.0
 ```
 
 下面的函数接收应用已经创建的 `*sql.DB` 和 Redis 客户端。创建 go-redis 客户端时，设置 `ContextTimeoutEnabled: true`，并保留套接字读写 deadline。使用其他 `redis.Scripter` 实现时，客户端须遵守传入的 context deadline。服务启动时调用一次，传入服务整个生命周期的 context。示例使用已有的 `AdSpace` 类型和 `loadAdSpaces(db)`，两者的完整实现在 `examples/adspace/main.go`。不同表只需更换数据类型、命名空间和查询函数。

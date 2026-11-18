@@ -1,4 +1,4 @@
-module example.com/tablecache
+module github.com/yesgs/ql-tablecache
 
 go 1.26.0
 
